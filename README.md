@@ -56,8 +56,9 @@ tethering: the daemon brings the connection up automatically.
    (toggle ON). Accept any "Use USB for …" dialog on the phone.
 
 > ⚠️ Toggling USB tethering off/on **re-enumerates the USB device**, which
-> makes the driver exit (it treats the link as dead). That is normal — just
-> run `./bin/tether start` again.
+> makes the driver exit (it treats the link as dead). That is normal — with
+> the auto-start daemon the link comes back by itself; otherwise just run
+> `./bin/tether start` again.
 
 ## Daily use
 
@@ -87,8 +88,10 @@ device currently has an IP are never touched.
 ./bin/cleanup --repo-only# only this repo's footprint, keep other devices' services
 ```
 
-After a cleanup, the flow is simply: plug the phone → enable **USB tethering**
-on it → `./bin/tether start`.
+After a cleanup the auto-start daemon is removed too. Either reinstall it
+(`./bin/setup` or `./bin/tether autostart on`) and just plug the phone, or
+use the manual flow: plug the phone → enable **USB tethering** on it →
+`./bin/tether start`.
 
 `status` and `test` work without admin rights; `start`/`stop`/`route`/
 `autostart` prompt for an admin password.
@@ -137,10 +140,14 @@ notification — event-driven, **no polling, 0% CPU** — until an Android
 phone (any major vendor: Samsung, Google/Pixel, Xiaomi, Huawei,
 OnePlus/Oppo/realme/vivo, Sony, LG, Motorola, ZTE, HTC, Lenovo, Nokia,
 ASUS) appears. It then starts the driver, gets a lease, and registers the
-"USB Tethering" service; when you unplug or toggle tethering off, it tears
-down and exits and the watcher goes back to waiting. A phone already
-connected when the daemon starts is picked up immediately (no replug
-needed). Logs: `/var/log/samsung-tethering.log`.
+"USB Tethering" service (or refreshes it — a configd restart re-associates
+the service with the recreated `feth0`). When you unplug or toggle tethering
+off, it tears down and exits and the watcher goes back to waiting. A phone
+already connected when the daemon starts is picked up immediately (no replug
+needed), and if the link dies while the phone is still attached it retries
+automatically. It takes ~10–20 s for the service to show as **Connected** in
+System Settings (driver attach + DHCP + configd restart — normal). Logs:
+`/var/log/samsung-tethering.log`.
 
 Requires Xcode Command Line Tools (for clang) at install time — Homebrew
 already depends on them.
@@ -148,7 +155,8 @@ already depends on them.
 ### Uninstall
 
 ```bash
-./bin/tether autostart off    # if you enabled it
+./bin/cleanup                 # removes driver, feth, service, daemon, logs, stale services
+./bin/tether autostart off    # (cleanup does this too)
 brew uninstall XiaoMiku01/tap/tetherkit-cli
 brew untap XiaoMiku01/tap
 ```
