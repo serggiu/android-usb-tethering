@@ -142,6 +142,7 @@ then re-run `./bin/tether test`.
 |---|---|
 | `tetherkit-cli --list` shows nothing | cable is charge-only; USB tethering off; "Use USB for …" dialog not confirmed |
 | Driver starts but `feth0` never appears | phone re-toggled tethering mid-start — run `./bin/tether start` again |
+| `feth0` loses its IP / no internet after you unplug ethernet or join a Wi-Fi | macOS drops the *temporary* DHCP service on any network config change. Re-run `./bin/tether start` (driver stays up; it just re-issues DHCP) |
 | DHCP lease but everything times out | **VPN/firewall kill switch** (see above); or phone has no uplink (cellular data off, airplane mode) |
 | No DNS reply from phone | phone's DNS server not forwarding; check `ipconfig getoption feth0 router` and retest |
 | Slow throughput | userspace driver caps at USB 2.0 HS (≈300–420 Mbps); expected |
