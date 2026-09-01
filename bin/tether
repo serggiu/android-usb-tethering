@@ -16,6 +16,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG=/tmp/tetherkit-cli.log
 BIN="$(command -v tetherkit-cli 2>/dev/null || true)"
 
@@ -76,6 +77,15 @@ tether_start() {
     done
     feth_addrs
     [[ -n "$IP" ]] || die "No DHCP lease on feth0. Is USB tethering ON on the phone? tail -40 $LOG"
+
+    # Make the connection visible to the system (System Settings, VPN
+    # clients, reachability checks): create a persistent network service.
+    # Without it, apps see "no internet" even though routing works.
+    if [[ ! $(networksetup -listallnetworkservices 2>/dev/null) == *"USB Tethering"* ]]; then
+        log "Registering 'USB Tethering' network service for feth0 (system-level visibility)..."
+        sudo "$SCRIPT_DIR/scripts/service.sh" add feth0 "USB Tethering" 2>/dev/null \
+            || warn "Could not register network service; apps may not see this connection"
+    fi
 
     ok "Connected: address $IP, gateway/DNS $GW"
     echo
