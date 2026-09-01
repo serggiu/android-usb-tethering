@@ -1,4 +1,4 @@
-# samsung-tethering
+# android-usb-tethering
 
 Turn an Android phone (Samsung S24+ etc.) into an internet connection for a
 Mac over USB. Uses [TetherKit](https://github.com/XiaoMiku01/TetherKit), a
@@ -39,7 +39,7 @@ to verify the device is detected (no installs happen in `--check` mode).
 
 Next: **`./bin/tether start`** (needs your admin password — the driver must
 create a virtual interface) — or just plug the phone and enable USB
-tethering: the daemon brings the connection up automatically.
+tethering: the daemon brings the connection up automatically after 10 - 20 seconds.
 
 ## Phone setup (once)
 
@@ -73,6 +73,8 @@ tethering: the daemon brings the connection up automatically.
 ./bin/cleanup           # full reset: driver, feth, service, logs + stale services
 ```
 
+If the auto-start is flaky on your end, you can always manually start the connection with `bin/tether start`.
+
 ### Reset / cleanup
 
 `./bin/cleanup` removes everything this repo may have set up (driver, `feth0`/
@@ -83,15 +85,15 @@ System services (`Wi-Fi`, `Thunderbolt*`, `Bluetooth*`) and any service whose
 device currently has an IP are never touched.
 
 ```bash
-./bin/cleanup            # full reset (admin pw)
-./bin/cleanup --dry-run  # preview only, changes nothing
-./bin/cleanup --repo-only# only this repo's footprint, keep other devices' services
+./bin/cleanup             # full reset (admin pw)
+./bin/cleanup --dry-run   # preview only, changes nothing
+./bin/cleanup --repo-only # only this repo's footprint, keep other devices' services
 ```
 
 After a cleanup the auto-start daemon is removed too. Either reinstall it
 (`./bin/setup` or `./bin/tether autostart on`) and just plug the phone, or
-use the manual flow: plug the phone → enable **USB tethering** on it →
-`./bin/tether start`.
+use the manual flow: 
+plug the phone → enable **USB tethering** on it →`./bin/tether start`.
 
 `status` and `test` work without admin rights; `start`/`stop`/`route`/
 `autostart` prompt for an admin password.
@@ -162,13 +164,12 @@ brew untap XiaoMiku01/tap
 
 ## Firewalls & VPNs — read this
 
-VPN apps with a **kill switch** (NordVPN, Mullvad, Proton, …) and strict
-firewalls (Little Snitch etc.) insert an pf rule like `block drop all` plus
-pass rules only for their own tunnel and known interfaces. `feth0` is not in
-that allow-list, so **all tether traffic is silently dropped** even though
-the link to the phone is perfectly healthy. Symptom: DHCP + gateway ping
-work, but ping/curl/DNS through the phone time out and the driver's TX
-counter stays at 0.
+VPN apps with a **kill switch** and strict firewalls insert an pf rule
+like `block drop all` plus pass rules only for their own tunnel and known
+interfaces. `feth0` is not in that allow-list, so **all tether traffic is
+silently dropped** even though the link to the phone is perfectly healthy.
+Symptom: DHCP + gateway ping work, but ping/curl/DNS through the phone
+time out and the driver's TX counter stays at 0.
 
 Check with:
 
@@ -180,12 +181,12 @@ sudo lsof /dev/pf          # which app owns the firewall
 Fix: disable the VPN / kill switch (or allow-list the `feth0` interface),
 then re-run `./bin/tether test`.
 
-If a VPN daemon (e.g. Mullvad's `mullvad-daemon`, which keeps `/dev/pf` open
-even when idle) holds the ruleset, its kill switch may pass only *root*
-traffic on `feth0` (`pass on feth0 ... user = 0`). Effect: VPN tunnel traffic
-over the phone works fine, but a non-root `curl --interface feth0` times out.
-That is intentional leak protection — to have the raw phone path work for
-unprivileged apps too, disable the kill switch or uninstall the idle daemon.
+If a VPN daemon (keeps `/dev/pf` open even when idle) holds the ruleset,
+its kill switch may pass only *root* traffic on `feth0` (`pass on feth0 ... user = 0`).
+Effect: VPN tunnel traffic over the phone works fine, but a non-root
+`curl --interface feth0` times out. That is intentional leak protection — to
+have the raw phone path work for unprivileged apps too, disable the kill switch
+or uninstall the idle daemon.
 
 ## Troubleshooting
 
@@ -206,7 +207,7 @@ Driver logs: `/tmp/tetherkit-cli.log` (manual) or `/var/log/samsung-tethering.lo
 ## Layout
 
 ```
-samsung-tethering/
+android-usb-tethering/
 ├── README.md
 ├── bin/
 │   ├── setup        # one-time installer (Homebrew + TetherKit + device scan + event daemon)
