@@ -178,7 +178,12 @@ tether_route() {
     feth_addrs
     [[ -n "$GW" ]] || die "No gateway from DHCP. Run './bin/tether start' first."
     log "Making the phone ($GW) the default route..."
-    sudo route -n change default "$GW"
+    # If a default route already exists, change it; otherwise add one.
+    if sudo route -n get default >/dev/null 2>&1; then
+        sudo route -n change default "$GW"
+    else
+        sudo route -n add default "$GW"
+    fi
     ok "Default route -> $GW (restore with: sudo route -n change default <old-gateway>)"
 }
 
