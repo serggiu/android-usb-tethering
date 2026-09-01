@@ -215,6 +215,17 @@ samsung-tethering/
 │   └── cleanup      # full reset: driver, feth, service, logs + stale services
 └── scripts/
     ├── daemon-wrapper.sh   # tether wrapper (driver + DHCP + service), run by the watcher
-    ├── service.sh          # register/remove the persistent network service
+    ├── service.sh          # register/remove/refresh the persistent network service
     └── usb-watch.c         # IOKit watcher daemon source (compiled at install)
 ```
+
+## License & credits
+
+This project — the scripts in `bin/` and `scripts/` — is MIT-licensed (see
+[LICENSE](LICENSE)). The scripts are original and do not contain TetherKit
+code; they only orchestrate the `tetherkit-cli` binary they install.
+
+The actual USB driver is [TetherKit](https://github.com/XiaoMiku01/TetherKit)
+by XiaoMiku01 (also MIT-licensed), installed via Homebrew from the
+`XiaoMiku01/tap` tap; the driver binary and any libraries it bundles are
+governed by their own licenses.
