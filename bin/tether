@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+#
+# samsung-tethering — daily driver. Start / stop / inspect the USB tether
+# connection between this Mac and an Android phone.
+#
+#   ./bin/tether start      start the RNDIS driver + get a DHCP lease
+#   ./bin/tether stop       stop the driver and tear down the link
+#   ./bin/tether status     show driver + interface + address state
+#   ./bin/tether test       verify internet through the phone (DNS/ping/HTTPS)
+#   ./bin/tether route      make the phone the default route (replaces current)
+#   ./bin/tether autostart on|off   install/remove a launchd auto-start daemon
+#   ./bin/tether help
+#
+# Only start/stop/route/autostart need an admin password (feth + bpf).
+# status and test work without.
+
+set -euo pipefail
+
+LOG=/tmp/tetherkit-cli.log
+BIN="$(command -v tetherkit-cli 2>/dev/null || true)"
+
+c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_cyan=$'\033[1;36m'; c_yel=$'\033[1;33m'; c_off=$'\033[0m'
+
+log() { printf '%s[tether]%s %s\n' "$c_cyan" "$c_off" "$*"; }
+warn() { printf '%s[warn]%s %s\n' "$c_yel" "$c_off" "$*"; }
+die() { printf '%s[error]%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+ok() { printf '%s[ok]%s %s\n' "$c_green" "$c_off" "$*"; }
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+
+require_bin() {
+    [[ -n "$BIN" ]] || die "tetherkit-cli not found. Run ./bin/setup first."
+}
+
+require_root() {
+    sudo -v >/dev/null 2>&1 || true
+}
+
+driver_running() {
+    pgrep -x tetherkit-cli >/dev/null 2>&1
+}
+
+feth_addrs() {
+    IP="$(ipconfig getifaddr feth0 2>/dev/null || true)"
+    GW="$(ipconfig getoption feth0 router 2>/dev/null || true)"
+}
+
+# ---------------------------------------------------------------- start ----
+
+tether_start() {
+    require_bin
+
+    if driver_running; then
+        warn "Driver is already running. Skipping start."
+    else
+        require_root
+        log "Launching RNDIS driver (tetherkit-cli)..."
+        BINQ="$(printf '%q' "$BIN")"
+        sudo sh -c "( ( $BINQ > $LOG 2>&1 & ) )"
+    fi
+
+    log "Waiting for the feth0 interface..."
+    for i in $(seq 1 20); do
+        if ifconfig feth0 >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    ifconfig feth0 >/dev/null 2>&1 || { warn "feth0 never appeared. See: tail -40 $LOG"; exit 1; }
+
+    log "Requesting an IP from the phone (DHCP)..."
+    sudo ipconfig set feth0 DHCP
+
+    for i in $(seq 1 15); do
+        feth_addrs
+        [[ -n "$IP" ]] && break
+        sleep 1
+    done
+    feth_addrs
+    [[ -n "$IP" ]] || die "No DHCP lease on feth0. Is USB tethering ON on the phone? tail -40 $LOG"
+
+    ok "Connected: address $IP, gateway/DNS $GW"
+    echo
+    tether_status
+}
+
+# ---------------------------------------------------------------- stop -----
+
+tether_stop() {
+    require_root
+    if driver_running; then
+        log "Stopping RNDIS driver..."
+        sudo pkill -x tetherkit-cli
+        for i in $(seq 1 10); do
+            driver_running || break
+            sleep 1
+        done
+    fi
+    if ifconfig feth0 >/dev/null 2>&1; then
+        warn "feth0 still present; removing..."
+        sudo ifconfig feth0 destroy 2>/dev/null || true
+        sudo ifconfig feth1 destroy 2>/dev/null || true
+    fi
+    ok "Tethering stopped."
+}
+
+# ---------------------------------------------------------------- status ---
+
+tether_status() {
+    require_bin
+    echo "Driver:"
+    if driver_running; then
+        ps -o pid,etime,comm -p "$(pgrep -x tetherkit-cli | head -1)" 2>/dev/null | sed 's/^/  /'
+    else
+        warn "  NOT running (start it with: ./bin/tether start)"
+    fi
+    echo "Interface feth0:"
+    if ifconfig feth0 >/dev/null 2>&1; then
+        ifconfig feth0 | grep -E '^\s+flags|^\s+inet |^\s+ether ' | sed 's/^/  /'
+    else
+        warn "  not present"
+    fi
+    feth_addrs
+    echo "Address details:"
+    printf '  IP:      %s\n' "${IP:-?}"
+    printf '  Gateway: %s\n' "${GW:-?}"
+    if [[ -n "$IP" && -n "$GW" ]]; then
+        if ping -S "$IP" -c 1 -W 2 "$GW" >/dev/null 2>&1; then
+            ok "  link to phone: reachable"
+        else
+            warn "  link to phone: no reply (is the phone plugged in?)"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------- test -----
+
+tether_test() {
+    require_bin
+    feth_addrs
+    [[ -n "$IP" ]] || die "No address on feth0. Run './bin/tether start' first."
+    [[ -n "$GW" ]] || die "No gateway (router) from DHCP."
+
+    echo "Testing internet through the phone (gw=$GW, src=$IP)..."
+
+    printf '  DNS    : '
+    if command -v dig >/dev/null 2>&1; then
+        if [[ -n "$(dig +time=3 +tries=1 @"$GW" "$HOST" +short 2>/dev/null | grep -E '^[0-9.]+$' | head -1)" ]]; then
+            ok "resolved by phone ($HOST)"
+        else
+            warn "no DNS reply from phone"
+        fi
+    elif nslookup -timeout=3 "$HOST" "$GW" 2>&1 | grep -q 'Address'; then
+        ok "resolved by phone ($HOST)"
+    else
+        warn "no DNS reply from phone"
+    fi
+
+    printf '  Ping   : '
+    if ping -S "$IP" -c 3 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        ok "8.8.8.8 reachable"
+    else
+        warn "8.8.8.8 unreachable"
+    fi
+
+    printf '  HTTPS  : '
+    if curl --interface feth0 -sS -m 15 -o /dev/null -w '%{http_code} (%{time_total}s)' https://api.ipify.org 2>/dev/null; then
+        echo
+        ok "internet through the phone works"
+    else
+        warn "https://api.ipify.org failed"
+    fi
+}
+HOST="${TETHER_TEST_HOST:-www.apple.com}"
+
+# ---------------------------------------------------------------- route ----
+
+tether_route() {
+    require_root
+    feth_addrs
+    [[ -n "$GW" ]] || die "No gateway from DHCP. Run './bin/tether start' first."
+    log "Making the phone ($GW) the default route..."
+    sudo route -n change default "$GW"
+    ok "Default route -> $GW (restore with: sudo route -n change default <old-gateway>)"
+}
+
+# ------------------------------------------------------------ autostart ----
+
+AUTOSTART_LABEL="com.samsung-tethering.driver"
+PLIST="/Library/LaunchDaemons/${AUTOSTART_LABEL}.plist"
+WRAPPER="/usr/local/bin/samsung-tethering-daemon"
+
+tether_autostart() {
+    require_bin
+    case "${1:-}" in
+        on)
+            require_root
+            log "Installing auto-start daemon ($AUTOSTART_LABEL)..."
+            sudo mkdir -p /usr/local/bin
+            sudo cp "$(dirname "$0")/../scripts/daemon-wrapper.sh" "$WRAPPER"
+            sudo chmod +x "$WRAPPER"
+            sudo tee "$PLIST" >/dev/null <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$AUTOSTART_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$WRAPPER</string>
+        <string>$BIN</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><false/>
+    <key>StandardOutPath</key><string>/var/log/samsung-tethering.log</string>
+    <key>StandardErrorPath</key><string>/var/log/samsung-tethering.log</string>
+</dict>
+</plist>
+EOF
+            sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 || true
+            sudo launchctl bootstrap system "$PLIST" 2>/dev/null \
+                || sudo launchctl load -w "$PLIST"
+            ok "Auto-start installed. The daemon runs the driver + DHCP on boot;"
+            ok "after plugging the phone, try: ./bin/tether status"
+            ;;
+        off)
+            require_root
+            log "Removing auto-start daemon..."
+            sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 \
+                || sudo launchctl unload -w "$PLIST" >/dev/null 2>&1 || true
+            sudo rm -f "$PLIST" "$WRAPPER"
+            ok "Auto-start removed."
+            ;;
+        *) die "usage: ./bin/tether autostart on|off" ;;
+    esac
+}
+
+# ---------------------------------------------------------------- main -----
+
+if [[ $# -eq 0 ]]; then
+    tether_status
+    exit 0
+fi
+
+case "$1" in
+    start) tether_start ;;
+    stop) tether_stop ;;
+    status) tether_status ;;
+    test) tether_test ;;
+    route) tether_route ;;
+    autostart) shift; tether_autostart "${1:-}" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command '$1' — see ./bin/tether help" ;;
+esac
