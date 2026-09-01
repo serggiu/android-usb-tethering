@@ -112,8 +112,7 @@ use the manual flow: plug the phone → enable **USB tethering** on it →
 `./bin/tether start` gives the phone link an address **and registers a persistent
 network service** ("USB Tethering" on `feth0`) so the system — System Settings,
 VPN clients, reachability checks — sees it as a real connection. Without that
-service, apps report "no internet" even though raw routing works (this is what
-made NordVPN fail until we added `scripts/service.sh`).
+service, apps report "no internet" even though raw routing works.
 
 It does **not** change your default route — only traffic explicitly bound to
 `feth0` uses it (e.g. `curl --interface feth0 https://api.ipify.org`). To route
