@@ -84,10 +84,15 @@ create a virtual interface).
 
 ### Browsers and default route
 
-`./bin/tether start` gives the phone link an address but **does not** change
-your default route — only traffic explicitly bound to `feth0` uses it (e.g.
-`curl --interface feth0 https://api.ipify.org`). To route *all* Mac internet
-through the phone (and away from the wired/other network):
+`./bin/tether start` gives the phone link an address **and registers a persistent
+network service** ("USB Tethering" on `feth0`) so the system — System Settings,
+VPN clients, reachability checks — sees it as a real connection. Without that
+service, apps report "no internet" even though raw routing works (this is what
+made NordVPN fail until we added `scripts/service.sh`).
+
+It does **not** change your default route — only traffic explicitly bound to
+`feth0` uses it (e.g. `curl --interface feth0 https://api.ipify.org`). To route
+*all* Mac internet through the phone (and away from the wired/other network):
 
 ```bash
 ./bin/tether route
@@ -136,13 +141,20 @@ sudo lsof /dev/pf          # which app owns the firewall
 Fix: disable the VPN / kill switch (or allow-list the `feth0` interface),
 then re-run `./bin/tether test`.
 
+If a VPN daemon (e.g. Mullvad's `mullvad-daemon`, which keeps `/dev/pf` open
+even when idle) holds the ruleset, its kill switch may pass only *root*
+traffic on `feth0` (`pass on feth0 ... user = 0`). Effect: VPN tunnel traffic
+over the phone works fine, but a non-root `curl --interface feth0` times out.
+That is intentional leak protection — to have the raw phone path work for
+unprivileged apps too, disable the kill switch or uninstall the idle daemon.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `tetherkit-cli --list` shows nothing | cable is charge-only; USB tethering off; "Use USB for …" dialog not confirmed |
 | Driver starts but `feth0` never appears | phone re-toggled tethering mid-start — run `./bin/tether start` again |
-| `feth0` loses its IP / no internet after you unplug ethernet or join a Wi-Fi | macOS drops the *temporary* DHCP service on any network config change. Re-run `./bin/tether start` (driver stays up; it just re-issues DHCP) |
+| `feth0` loses its IP / no internet after you unplug ethernet or join a Wi-Fi | Older versions dropped the *temporary* DHCP service on network changes. With the persistent "USB Tethering" service (`scripts/service.sh`) the lease survives — re-run `./bin/tether start` if it ever drops |
 | DHCP lease but everything times out | **VPN/firewall kill switch** (see above); or phone has no uplink (cellular data off, airplane mode) |
 | No DNS reply from phone | phone's DNS server not forwarding; check `ipconfig getoption feth0 router` and retest |
 | Slow throughput | userspace driver caps at USB 2.0 HS (≈300–420 Mbps); expected |
