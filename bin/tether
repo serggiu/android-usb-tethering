@@ -8,7 +8,7 @@
 #   ./bin/tether status     show driver + interface + address state
 #   ./bin/tether test       verify internet through the phone (DNS/ping/HTTPS)
 #   ./bin/tether route      make the phone the default route (replaces current)
-#   ./bin/tether autostart on|off   install/remove a launchd auto-start daemon
+#   ./bin/tether autostart on|off   install/remove the USB-event auto-start daemon
 #   ./bin/tether help
 #
 # Only start/stop/route/autostart need an admin password (feth + bpf).
@@ -81,7 +81,15 @@ tether_start() {
     # Make the connection visible to the system (System Settings, VPN
     # clients, reachability checks): create a persistent network service.
     # Without it, apps see "no internet" even though routing works.
-    if [[ ! $(networksetup -listallnetworkservices 2>/dev/null) == *"USB Tethering"* ]]; then
+    if [[ $(networksetup -listallnetworkservices 2>/dev/null) == *"USB Tethering"* ]]; then
+        log "Refreshing the 'USB Tethering' network service (re-associating feth0)..."
+        if out="$(sudo "$SCRIPT_DIR/scripts/service.sh" refresh feth0 2>&1)"; then
+            echo "$out" | sed 's/^/  /'
+        else
+            warn "Could not refresh network service; apps may not see this connection"
+            warn "$out"
+        fi
+    else
         log "Registering 'USB Tethering' network service for feth0 (system-level visibility)..."
         if out="$(sudo "$SCRIPT_DIR/scripts/service.sh" add feth0 "USB Tethering" 2>&1)"; then
             echo "$out" | sed 's/^/  /'
@@ -212,10 +220,17 @@ tether_autostart() {
     case "${1:-}" in
         on)
             require_root
-            log "Installing auto-start daemon ($AUTOSTART_LABEL)..."
+            log "Installing USB-tethering event daemon ($AUTOSTART_LABEL)..."
+            command -v clang >/dev/null 2>&1 \
+                || die "clang not found — install Xcode Command Line Tools: xcode-select --install"
             sudo mkdir -p /usr/local/bin
             sudo cp "$(dirname "$0")/../scripts/daemon-wrapper.sh" "$WRAPPER"
-            sudo chmod +x "$WRAPPER"
+            sudo cp "$(dirname "$0")/../scripts/service.sh" /usr/local/bin/samsung-tethering-service.sh
+            sudo chmod +x "$WRAPPER" /usr/local/bin/samsung-tethering-service.sh
+            log "Compiling the IOKit USB watcher..."
+            sudo clang -O2 -o /usr/local/bin/samsung-tethering-watch \
+                "$(dirname "$0")/../scripts/usb-watch.c" \
+                -framework IOKit -framework CoreFoundation
             sudo tee "$PLIST" >/dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -224,28 +239,31 @@ tether_autostart() {
     <key>Label</key><string>$AUTOSTART_LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$WRAPPER</string>
-        <string>$BIN</string>
+        <string>/usr/local/bin/samsung-tethering-watch</string>
     </array>
     <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><false/>
+    <key>KeepAlive</key><true/>
     <key>StandardOutPath</key><string>/var/log/samsung-tethering.log</string>
     <key>StandardErrorPath</key><string>/var/log/samsung-tethering.log</string>
 </dict>
 </plist>
 EOF
+            sudo plutil -lint "$PLIST"
             sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 || true
             sudo launchctl bootstrap system "$PLIST" 2>/dev/null \
                 || sudo launchctl load -w "$PLIST"
-            ok "Auto-start installed. The daemon runs the driver + DHCP on boot;"
-            ok "after plugging the phone, try: ./bin/tether status"
+            ok "Event daemon installed: a tiny IOKit watcher (~1 MB, 0% CPU)"
+            ok "starts the tether automatically when an Android phone is plugged"
+            ok "in, and tears down when it is unplugged."
             ;;
         off)
             require_root
             log "Removing auto-start daemon..."
             sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 \
                 || sudo launchctl unload -w "$PLIST" >/dev/null 2>&1 || true
-            sudo rm -f "$PLIST" "$WRAPPER"
+            sudo rm -f "$PLIST" "$WRAPPER" \
+                /usr/local/bin/samsung-tethering-service.sh \
+                /usr/local/bin/samsung-tethering-watch
             ok "Auto-start removed."
             ;;
         *) die "usage: ./bin/tether autostart on|off" ;;

@@ -12,6 +12,8 @@
 # Usage (run as root):
 #   service.sh add <bsd-name> <service-name>
 #   service.sh remove <bsd-name>
+#   service.sh refresh <bsd-name>     (re-associate an existing service after a
+#                                      driver/interface recreation)
 #
 # Safety: backs up /Library/Preferences/SystemConfiguration/preferences.plist
 # before every change.
@@ -157,5 +159,17 @@ case "$action" in
             apply
         fi
         ;;
-    *) echo "usage: service.sh add|remove <bsd-name> [service-name]"; exit 2 ;;
+    refresh)
+        # Re-associate an already-registered service with a (recreated)
+        # interface: restart configd + re-issue DHCP. Needed after the driver
+        # destroys and recreates feth0, which leaves the service bound to a
+        # stale interface instance (shows "Not Connected" in System Settings).
+        if service_uuid_for_dev >/dev/null 2>&1; then
+            apply
+        else
+            echo "no service for $DEV"
+            exit 1
+        fi
+        ;;
+    *) echo "usage: service.sh add|remove|refresh <bsd-name> [service-name]"; exit 2 ;;
 esac

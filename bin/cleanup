@@ -114,13 +114,14 @@ remove_autostart() {
         run sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 \
             || run sudo launchctl unload -w "$AUTOSTART_PLIST" >/dev/null 2>&1 \
             || true
-        run sudo rm -f "$AUTOSTART_PLIST" \
-            /usr/local/bin/samsung-tethering-daemon \
-            /usr/local/bin/samsung-tethering-service.sh
-        ok "auto-start daemon removed"
     else
         ok "no auto-start daemon installed"
     fi
+    run sudo rm -f "$AUTOSTART_PLIST" \
+        /usr/local/bin/samsung-tethering-daemon \
+        /usr/local/bin/samsung-tethering-service.sh \
+        /usr/local/bin/samsung-tethering-watch
+    ok "auto-start daemon removed"
 }
 
 cleanup_logs() {

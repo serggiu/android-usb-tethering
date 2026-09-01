@@ -32,12 +32,14 @@ cd ~/Projects/samsung-tethering
 ./bin/setup
 ```
 
-`bin/setup` checks prerequisites, installs TetherKit via Homebrew, and scans
-for your phone. You can re-run `./bin/setup --check` anytime just to verify
-the device is detected (no installs happen in `--check` mode).
+`bin/setup` checks prerequisites, installs TetherKit via Homebrew, scans
+for your phone, and **installs the USB-event auto-start daemon** (asks for
+your admin password once). You can re-run `./bin/setup --check` anytime just
+to verify the device is detected (no installs happen in `--check` mode).
 
 Next: **`./bin/tether start`** (needs your admin password — the driver must
-create a virtual interface).
+create a virtual interface) — or just plug the phone and enable USB
+tethering: the daemon brings the connection up automatically.
 
 ## Phone setup (once)
 
@@ -66,7 +68,7 @@ create a virtual interface).
 ./bin/tether test       # DNS + ping 8.8.8.8 + HTTPS through the phone
 ./bin/tether stop       # tear everything down (admin pw)
 ./bin/tether route      # optional: make the phone the default route
-./bin/tether autostart on|off   # optional: launchd daemon at boot
+./bin/tether autostart on|off   # toggle the USB-event auto-start (setup installs it)
 ./bin/cleanup           # full reset: driver, feth, service, logs + stale services
 ```
 
@@ -121,17 +123,27 @@ It does **not** change your default route — only traffic explicitly bound to
 
 Reverse it with `sudo route -n change default <old-gateway>`.
 
-### Auto-start at boot (optional)
+### Auto-start when the phone connects (optional)
+
+`bin/setup` installs this for you; toggle it anytime with:
 
 ```bash
-./bin/tether autostart on     # installs a launchd daemon (needs admin)
+./bin/tether autostart on|off
 ```
 
-The daemon runs the driver and configures DHCP when the phone is connected.
-The driver exits when the phone is unplugged and the daemon follows;
-restart it after connecting the phone with `sudo launchctl bootstrap system
-/Library/LaunchDaemons/com.samsung-tethering.driver.plist` (or just use
-`./bin/tether start`).
+Instead of polling, it runs a tiny IOKit watcher (`samsung-tethering-watch`,
+~1 MB, compiled with clang during install) that blocks in a kernel USB
+notification — event-driven, **no polling, 0% CPU** — until an Android
+phone (any major vendor: Samsung, Google/Pixel, Xiaomi, Huawei,
+OnePlus/Oppo/realme/vivo, Sony, LG, Motorola, ZTE, HTC, Lenovo, Nokia,
+ASUS) appears. It then starts the driver, gets a lease, and registers the
+"USB Tethering" service; when you unplug or toggle tethering off, it tears
+down and exits and the watcher goes back to waiting. A phone already
+connected when the daemon starts is picked up immediately (no replug
+needed). Logs: `/var/log/samsung-tethering.log`.
+
+Requires Xcode Command Line Tools (for clang) at install time — Homebrew
+already depends on them.
 
 ### Uninstall
 
@@ -174,6 +186,7 @@ unprivileged apps too, disable the kill switch or uninstall the idle daemon.
 |---|---|
 | `tetherkit-cli --list` shows nothing | cable is charge-only; USB tethering off; "Use USB for …" dialog not confirmed |
 | Driver starts but `feth0` never appears | phone re-toggled tethering mid-start — run `./bin/tether start` again |
+| Tethering doesn't auto-start when enabled on the phone | event daemon not installed (`./bin/tether autostart on`) — check `/var/log/samsung-tethering.log`; fall back to `./bin/tether start` |
 | `feth0` loses its IP / no internet after you unplug ethernet or join a Wi-Fi | Older versions dropped the *temporary* DHCP service on network changes. With the persistent "USB Tethering" service (`scripts/service.sh`) the lease survives — re-run `./bin/tether start` if it ever drops |
 | DHCP lease but everything times out | **VPN/firewall kill switch** (see above); or phone has no uplink (cellular data off, airplane mode) |
 | No DNS reply from phone | phone's DNS server not forwarding; check `ipconfig getoption feth0 router` and retest |
@@ -189,10 +202,11 @@ Driver logs: `/tmp/tetherkit-cli.log` (manual) or `/var/log/samsung-tethering.lo
 samsung-tethering/
 ├── README.md
 ├── bin/
-│   ├── setup        # one-time installer (Homebrew + TetherKit + device scan)
+│   ├── setup        # one-time installer (Homebrew + TetherKit + device scan + event daemon)
 │   ├── tether       # daily driver: start|stop|status|test|route|autostart
 │   └── cleanup      # full reset: driver, feth, service, logs + stale services
 └── scripts/
-    ├── daemon-wrapper.sh   # launchd wrapper (driver + DHCP)
-    └── service.sh          # register/remove the persistent network service
+    ├── daemon-wrapper.sh   # tether wrapper (driver + DHCP + service), run by the watcher
+    ├── service.sh          # register/remove the persistent network service
+    └── usb-watch.c         # IOKit watcher daemon source (compiled at install)
 ```

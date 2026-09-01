@@ -73,3 +73,15 @@ else
     ok "Phone detected as an RNDIS device. Next step:"
     ok "    ./bin/tether start"
 fi
+
+# --- install the USB-event auto-start daemon -------------------------------
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    exit 0
+fi
+
+log "Installing the USB-tethering event daemon (asks for your admin password)..."
+"$(dirname "$0")/tether" autostart on
+ok "Setup complete. From now on, plug the phone and enable USB tethering on"
+ok "it — the connection comes up automatically. (Or run: ./bin/tether start"
+ok "for an immediate/manual start; ./bin/tether autostart off to remove the daemon.)"
