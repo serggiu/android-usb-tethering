@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+#
+# samsung-tethering — full teardown of everything this repo's scripts may
+# have created, plus optional removal of stale network services left behind
+# by other devices (phones, USB ethernet adapters).
+#
+# Removes:
+#   - the tetherkit-cli driver process (if running)
+#   - the feth0/feth1 virtual interfaces
+#   - the persistent "USB Tethering" network service (SystemConfiguration)
+#   - the launchd auto-start daemon, if installed
+#   - driver logs and SystemConfiguration backups made by scripts/service.sh
+#   - stale network services from other devices (default on; --repo-only skips)
+#
+# Safety: services that are clearly system-owned (Wi-Fi, Thunderbolt*,
+# Bluetooth*) or whose device currently has an IP are never removed.
+#
+# Usage:
+#   ./bin/cleanup             # full cleanup (asks for admin password)
+#   ./bin/cleanup --dry-run   # preview only, nothing is changed
+#   ./bin/cleanup --repo-only # only remove what this repo created
+#
+# After cleanup: plug the phone, enable USB tethering, run ./bin/tether start
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLIST=/Library/Preferences/SystemConfiguration/preferences.plist
+AUTOSTART_LABEL="com.samsung-tethering.driver"
+AUTOSTART_PLIST="/Library/LaunchDaemons/${AUTOSTART_LABEL}.plist"
+
+DRY=0
+REPO_ONLY=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY=1 ;;
+        --repo-only) REPO_ONLY=1 ;;
+        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+log() { printf '\033[1;36m[cleanup]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
+ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
+
+run() {
+    if [[ "$DRY" -eq 1 ]]; then
+        echo "  [dry-run] $*"
+    else
+        "$@"
+    fi
+}
+
+require_root() {
+    [[ "$DRY" -eq 1 ]] && return 0
+    sudo -v || { echo "[error] admin password required" >&2; exit 1; }
+}
+
+# ------------------------------------------------------------- teardown ----
+
+stop_driver() {
+    log "Stopping the RNDIS driver (tetherkit-cli)..."
+    if pgrep -x tetherkit-cli >/dev/null 2>&1; then
+        run sudo pkill -x tetherkit-cli || warn "pkill reported an error (driver may have exited already)"
+        for i in $(seq 1 10); do
+            pgrep -x tetherkit-cli >/dev/null 2>&1 || break
+            sleep 1
+        done
+        if pgrep -x tetherkit-cli >/dev/null 2>&1; then
+            warn "driver still running after 10s"
+        else
+            ok "driver stopped"
+        fi
+    else
+        ok "driver not running"
+    fi
+}
+
+destroy_feth() {
+    log "Destroying virtual interfaces..."
+    if ifconfig feth0 >/dev/null 2>&1; then
+        run sudo ifconfig feth0 destroy || warn "could not destroy feth0"
+        run sudo ifconfig feth1 destroy || warn "could not destroy feth1"
+        if ifconfig feth0 >/dev/null 2>&1; then
+            warn "feth0 still present"
+        else
+            ok "feth0/feth1 destroyed"
+        fi
+    else
+        ok "no feth interfaces present"
+    fi
+}
+
+remove_service() {
+    log "Removing the 'USB Tethering' network service..."
+    if networksetup -listallnetworkservices 2>/dev/null | grep -q "USB Tethering"; then
+        run sudo "$SCRIPT_DIR/scripts/service.sh" remove feth0 \
+            || warn "service.sh remove reported an error"
+        if networksetup -listallnetworkservices 2>/dev/null | grep -q "USB Tethering"; then
+            warn "still listed — falling back to networksetup"
+            run sudo networksetup -removenetworkservice "USB Tethering" \
+                || warn "networksetup could not remove it either"
+        fi
+        ok "service removed"
+    else
+        ok "service not registered"
+    fi
+}
+
+remove_autostart() {
+    log "Removing the auto-start launchd daemon (if installed)..."
+    if [[ -f "$AUTOSTART_PLIST" ]]; then
+        run sudo launchctl bootout "system/$AUTOSTART_LABEL" >/dev/null 2>&1 \
+            || run sudo launchctl unload -w "$AUTOSTART_PLIST" >/dev/null 2>&1 \
+            || true
+        run sudo rm -f "$AUTOSTART_PLIST" \
+            /usr/local/bin/samsung-tethering-daemon \
+            /usr/local/bin/samsung-tethering-service.sh
+        ok "auto-start daemon removed"
+    else
+        ok "no auto-start daemon installed"
+    fi
+}
+
+cleanup_logs() {
+    log "Removing logs and SystemConfiguration backups..."
+    run sudo rm -f /tmp/tetherkit-cli.log /var/log/samsung-tethering.log \
+        || warn "could not remove log files"
+    run sudo rm -f /Library/Preferences/SystemConfiguration/preferences.plist.backup-* \
+        || warn "could not remove preference backups"
+    ok "logs and backups cleaned"
+}
+
+# ------------------------------------------------------- stale services ----
+
+# Prints "service-name<TAB>device" for every service, using the order list
+# (the authoritative service -> hardware port mapping on macOS).
+service_devices() {
+    networksetup -listnetworkserviceorder 2>/dev/null | awk '
+        /^\(/ {
+            name = $0
+            sub(/^\([0-9]+\) /, "", name)
+            getline
+            dev = ""
+            if ($0 ~ /Device:/) {
+                n = split($0, f, " ")
+                for (i = 1; i <= n; i++) if (f[i] == "Device:") dev = f[i + 1]
+                gsub(/\)/, "", dev)
+            }
+            print name "\t" dev
+        }'
+}
+
+cleanup_stale() {
+    log "Removing stale network services left by other devices/adapters..."
+    local name dev
+    while IFS=$'\t' read -r name dev; do
+        [[ -n "$name" ]] || continue
+        case "$name" in
+            Wi-Fi|Thunderbolt*|Bluetooth*) continue ;;   # system services — never touch
+        esac
+        if [[ -z "$dev" ]]; then
+            warn "keep: $name (no device association — cannot verify it is unused)"
+            continue
+        fi
+        if ipconfig getifaddr "$dev" >/dev/null 2>&1; then
+            warn "keep: $name (device $dev is active — has an IP)"
+            continue
+        fi
+        echo "  remove: $name (device $dev not active)"
+        run sudo networksetup -removenetworkservice "$name" \
+            || warn "  could not remove $name"
+    done < <(service_devices)
+    ok "stale services processed"
+}
+
+# ------------------------------------------------------------ validation ---
+
+validate() {
+    echo
+    log "Validation:"
+    if pgrep -x tetherkit-cli >/dev/null 2>&1; then warn "  [FAIL] driver still running"; else ok "  driver stopped"; fi
+    if ifconfig feth0 >/dev/null 2>&1; then warn "  [FAIL] feth0 still present"; else ok "  feth0 gone"; fi
+    if networksetup -listallnetworkservices 2>/dev/null | grep -q "USB Tethering"; then
+        warn "  [FAIL] 'USB Tethering' service still listed"
+    else
+        ok "  'USB Tethering' service removed"
+    fi
+    local n
+    n="$(plutil -p "$PLIST" 2>/dev/null | grep -c 'USB Tethering' || true)"
+    if [[ "$n" -gt 0 ]]; then
+        warn "  [FAIL] $n 'USB Tethering' entries remain in preferences.plist"
+    else
+        ok "  preferences.plist has no 'USB Tethering' entries"
+    fi
+
+    echo
+    log "Default routes now:"
+    netstat -rn -f inet | grep -E '^default' | sed 's/^/  /' || echo "  (none)"
+
+    if [[ "$DRY" -eq 0 ]]; then
+        echo
+        log "pf rules (only com.apple anchors expected):"
+        sudo pfctl -s rules 2>&1 | grep -v -E 'No ALTQ|ALTQ related|^scrub-anchor|^anchor|^nat-anchor|^rdr-anchor|^dummynet-anchor|^$' \
+            || ok "  no unexpected rules"
+    fi
+
+    echo
+    log "Remaining network services:"
+    networksetup -listallnetworkservices 2>/dev/null | sed 's/^/  /'
+}
+
+# ------------------------------------------------------------------ main ---
+
+MODE=""
+[[ "$DRY" -eq 1 ]] && MODE="$MODE (dry-run)"
+[[ "$REPO_ONLY" -eq 1 ]] && MODE="$MODE (repo-only)"
+echo
+log "samsung-tethering cleanup$MODE"
+require_root
+stop_driver
+destroy_feth
+remove_service
+remove_autostart
+cleanup_logs
+if [[ "$REPO_ONLY" -eq 0 ]]; then
+    cleanup_stale
+fi
+validate
+echo
+if [[ "$DRY" -eq 0 ]]; then
+    ok "Cleanup complete. Next: plug the phone, enable USB tethering on it,"
+    ok "then run: ./bin/tether start"
+fi

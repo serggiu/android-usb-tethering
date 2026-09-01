@@ -39,7 +39,7 @@ set_uuid() {
 service_uuid_for_dev() {
     # Find the NetworkServices key whose Interface.DeviceName == $DEV
     local keys
-    keys="$("$PB" -c "Print :NetworkServices" "$PLIST" 2>/dev/null | grep -E '^    [0-9A-F-]{36} = ' | sed -E 's/^    ([0-9A-F-]{36}) = .*/\1/')"
+    keys="$("$PB" -c "Print :NetworkServices" "$PLIST" 2>/dev/null | grep -iE '^    [0-9A-Fa-f-]{36} = ' | sed -E 's/^    ([0-9A-Fa-f-]{36}) = .*/\1/')"
     for k in $keys; do
         local dn
         dn="$("$PB" -c "Print :NetworkServices:$k:Interface:DeviceName" "$PLIST" 2>/dev/null || true)"
@@ -105,7 +105,7 @@ do_remove() {
     uuid="$(service_uuid_for_dev || true)"
     if [[ -z "$uuid" ]]; then
         echo "no service for $DEV"
-        return 0
+        return 1
     fi
     backup_plist
     "$PB" -c "Delete :NetworkServices:$uuid" "$PLIST"
@@ -144,7 +144,18 @@ apply() {
 }
 
 case "$action" in
-    add) do_add; apply ;;
-    remove) do_remove; apply ;;
+    add)
+        if service_uuid_for_dev >/dev/null 2>&1; then
+            echo "service for $DEV already exists: $(service_uuid_for_dev)"
+        else
+            do_add
+            apply
+        fi
+        ;;
+    remove)
+        if do_remove; then
+            apply
+        fi
+        ;;
     *) echo "usage: service.sh add|remove <bsd-name> [service-name]"; exit 2 ;;
 esac

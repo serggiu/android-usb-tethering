@@ -60,13 +60,33 @@ create a virtual interface).
 ## Daily use
 
 ```bash
+./bin/setup            # one-time: install the TetherKit driver (needs Homebrew)
 ./bin/tether start      # start driver + get IP from the phone (admin pw)
 ./bin/tether status     # driver, feth0, IP/gateway, link reachability
 ./bin/tether test       # DNS + ping 8.8.8.8 + HTTPS through the phone
 ./bin/tether stop       # tear everything down (admin pw)
 ./bin/tether route      # optional: make the phone the default route
 ./bin/tether autostart on|off   # optional: launchd daemon at boot
+./bin/cleanup           # full reset: driver, feth, service, logs + stale services
 ```
+
+### Reset / cleanup
+
+`./bin/cleanup` removes everything this repo may have set up (driver, `feth0`/
+`feth1`, the persistent "USB Tethering" service, the auto-start daemon if
+installed, logs and SystemConfiguration backups) **and** deletes stale network
+services left behind by other devices (old phones, USB ethernet adapters).
+System services (`Wi-Fi`, `Thunderbolt*`, `Bluetooth*`) and any service whose
+device currently has an IP are never touched.
+
+```bash
+./bin/cleanup            # full reset (admin pw)
+./bin/cleanup --dry-run  # preview only, changes nothing
+./bin/cleanup --repo-only# only this repo's footprint, keep other devices' services
+```
+
+After a cleanup, the flow is simply: plug the phone → enable **USB tethering**
+on it → `./bin/tether start`.
 
 `status` and `test` work without admin rights; `start`/`stop`/`route`/
 `autostart` prompt for an admin password.
@@ -170,7 +190,9 @@ samsung-tethering/
 ├── README.md
 ├── bin/
 │   ├── setup        # one-time installer (Homebrew + TetherKit + device scan)
-│   └── tether       # daily driver: start|stop|status|test|route|autostart
+│   ├── tether       # daily driver: start|stop|status|test|route|autostart
+│   └── cleanup      # full reset: driver, feth, service, logs + stale services
 └── scripts/
-    └── daemon-wrapper.sh   # launchd wrapper (driver + DHCP)
+    ├── daemon-wrapper.sh   # launchd wrapper (driver + DHCP)
+    └── service.sh          # register/remove the persistent network service
 ```
